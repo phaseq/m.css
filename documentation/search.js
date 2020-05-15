@@ -25,6 +25,7 @@
 "use strict"; /* it summons the Cthulhu in a proper way, they say */
 
 var Search = {
+    index: null,
     formatVersion: 1, /* the data filename contains this number too */
 
     dataSize: 0, /* used mainly by tests, not here */
@@ -53,6 +54,27 @@ var Search = {
     autocompleteNextInputEvent: false,
 
     init: function(buffer, maxResults) {
+        var docs = [];
+        for (var i = 0; i < fullsearchdata.length; ++i) {
+            docs.push({
+                id: i,
+                name: fullsearchdata[i][0],
+                content: fullsearchdata[i][1],
+                url: fullsearchdata[i][2],
+                kind: fullsearchdata[i][3]
+            });
+        }
+        this.index = new FlexSearch({
+            encode: "balance",
+            tokenize: "full",
+            threshold: 0,
+            doc: {
+                id: "id",
+                field: ["name", "content"]
+            }
+        });
+        this.index.add(docs);
+
         let view = new DataView(buffer);
 
         /* The file is too short to contain at least the headers and empty
@@ -513,6 +535,7 @@ var Search = {
                 /* Labels + */
                 list += '<li' + (i ? '' : ' id="search-current"') + '><a href="' + results[i].url + '" onmouseover="selectResult(event)" data-md-link-title="' + this.escape(results[i].name.substr(results[i].name.length - this.searchString.length - results[i].suffixLength)) + '"><div class="m-label m-flat ' + results[i].cssClass + '">' + results[i].typeName + '</div>' + (results[i].flags & 2 ? '<div class="m-label m-danger">deprecated</div>' : '') + (results[i].flags & 4 ? '<div class="m-label m-danger">deleted</div>' : '');
 
+                if (0) {
                 /* Render the alias (cut off from the right) */
                 if(results[i].alias) {
                     list += '<div class="m-doc-search-alias"><span class="m-text m-dim">' + this.escape(results[i].name.substr(0, results[i].name.length - this.searchString.length - results[i].suffixLength)) + '</span><span class="m-doc-search-typed">' + this.escape(results[i].name.substr(results[i].name.length - this.searchString.length - results[i].suffixLength, this.searchString.length)) + '</span>' + this.escapeForRtl(results[i].name.substr(results[i].name.length - results[i].suffixLength)) + '<span class="m-text m-dim">: ' + this.escape(results[i].alias) + '</span>';
@@ -522,11 +545,22 @@ var Search = {
                 } else {
                     list += '<div><span class="m-text m-dim">' + this.escapeForRtl(results[i].name.substr(0, results[i].name.length - this.searchString.length - results[i].suffixLength)) + '</span><span class="m-doc-search-typed">' + this.escapeForRtl(results[i].name.substr(results[i].name.length - this.searchString.length - results[i].suffixLength, this.searchString.length)) + '</span>' + this.escapeForRtl(results[i].name.substr(results[i].name.length - results[i].suffixLength));
                 }
+                }
+                var rows = [results[i].name, results[i].content];
+                for (let token of this.searchString.split(' ')) {
+                    var regex = new RegExp(token, "ig");
+                    for (var rowIdx = 0; rowIdx < 2; ++rowIdx) {
+                        rows[rowIdx] = rows[rowIdx].replace(regex, function(match) {
+                            return '<span class="m-doc-search-typed">'+match+'</span>';
+                        });
+                    }
+                }
+                list += '<div><span class="m-search-symbol"><b>' + rows[0] + '</b></span><br><span class="m-text m-dim">' + rows[1] + '</span>';
 
                 /* The closing */
                 list += '</div></a></li>';
             }
-            document.getElementById('search-results').innerHTML = this.fromUtf8(list);
+            document.getElementById('search-results').innerHTML = list;
             document.getElementById('search-current').scrollIntoView(true);
 
             /* Append the suggested tab autocompletion, if any, and if the user
@@ -556,9 +590,54 @@ var Search = {
         this.autocompleteNextInputEvent = false;
     },
 
+    mysearch: function(value) {
+        this.searchString = this.toUtf8(value.toLowerCase().replace(/^\s+/,''));
+        let searchResult = this.index.search(this.searchString);
+        var results = [];
+        for (let r of searchResult) {
+            results.push(
+                {name: r.name,
+                url: r.url,
+                content: r.content,
+                kind: r.kind,
+                flags: 0,
+                cssClass: "m-primary",
+                typeName: "",
+                suffixLength: name.length});
+        }
+        var tokens = [];
+        for (let token of this.searchString.split(' ')) {
+            tokens.push(token.toLowerCase());
+        }
+        results.sort(function(a, b) {
+            var numMatches = 0;
+            let a_name = a.name.toLowerCase();
+            let b_name = b.name.toLowerCase();
+            for (let token of tokens) {
+                if (a_name.search(token) != -1){
+                    numMatches -= 1;
+                }
+                if (b_name.search(token) != -1){
+                    numMatches += 1;
+                }
+                if (numMatches != 0) {
+                    return numMatches;
+                }
+            }
+            if (a.kind != b.kind) {
+                return b.kind - a.kind;
+            }
+            return a.name.length - b.name.length
+        });
+        if (results.length > 100) {
+            results = results.slice(0, 100);
+        }
+        return [results, ""];
+    },
+
     searchAndRender: /* istanbul ignore next */ function(value) {
         let prev = performance.now();
-        let results = this.search(value);
+        let results = this.mysearch(value);
         let after = performance.now();
         this.renderResults(results);
         if(this.searchString.length) {

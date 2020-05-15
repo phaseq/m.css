@@ -21,6 +21,12 @@
   {% if M_HTML_HEADER %}
   {{ M_HTML_HEADER|rtrim|indent(2) }}
   {% endif %}
+  <style>
+    .m-doc-search ul#search-results li a > div {white-space:normal !important;direction:ltr !important;}
+    .m-search-symbol {
+      color: #ccc;
+    }
+  </style>
 </head>
 <body>
 <header><nav id="navigation">
@@ -137,6 +143,8 @@
     </div>
   </div>
 </div>
+<script src="fullsearch.min.js"></script>
+<script src="fullsearchdata-v0.js"></script>
 <script src="search-v{{ SEARCHDATA_FORMAT_VERSION }}.js"></script>
 {% if M_SEARCH_DOWNLOAD_BINARY %}
 <script>

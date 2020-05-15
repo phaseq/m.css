@@ -1742,6 +1742,9 @@ def parse_enum(state: State, element: ET.Element):
                 result.keywords = value_search_keywords
                 if search_enum_values_as_keywords and value.initializer.startswith('='):
                     result.keywords += [(value.initializer[1:].lstrip(), '', 0)]
+                result.brief = value.brief
+                result.description = value.description
+                result.kind = compound.kind
                 state.search += [result]
 
             # If either brief or description for this value is present, we want
@@ -1765,6 +1768,9 @@ def parse_enum(state: State, element: ET.Element):
             result.prefix = state.current_prefix
             result.name = enum.name
             result.keywords = search_keywords
+            result.brief = enum.brief
+            result.description = enum.description
+            result.kind = compound.kind
             state.search += [result]
         return enum
     return None
@@ -1841,6 +1847,9 @@ def parse_typedef(state: State, element: ET.Element):
             result.prefix = state.current_prefix
             result.name = typedef.name
             result.keywords = search_keywords
+            result.brief = typedef.brief
+            result.description = typedef.description
+            result.kind = 'typedef'
             state.search += [result]
         return typedef
     return None
@@ -1993,6 +2002,9 @@ def parse_func(state: State, element: ET.Element):
             result.keywords = search_keywords
             result.params = [param.type for param in func.params]
             result.suffix = func.suffix
+            result.brief = func.brief
+            result.description = func.description
+            result.kind = 'func'
             state.search += [result]
         return func
     return None
@@ -2027,6 +2039,9 @@ def parse_var(state: State, element: ET.Element):
             result.prefix = state.current_prefix
             result.name = var.name
             result.keywords = search_keywords
+            result.brief = var.brief
+            result.description = var.description
+            result.kind = 'var'
             state.search += [result]
         return var
     return None
@@ -2068,6 +2083,9 @@ def parse_define(state: State, element: ET.Element):
             result.name = define.name
             result.keywords = search_keywords
             result.params = None if define.params is None else [param[0] for param in define.params]
+            result.brief = define.brief
+            result.description = define.description
+            result.kind = 'define'
             state.search += [result]
         return define
     return None
@@ -2408,6 +2426,76 @@ def build_search_data(state: State, merge_subtrees=True, add_lookahead_barriers=
     trie.sort(map)
 
     return serialize_search_data(trie, map, search_type_map, symbol_count, merge_subtrees=merge_subtrees, merge_prefixes=merge_prefixes)
+
+def build_fulltext_search_data(state: State):
+    data = []
+    
+    strip_tags_re = re.compile('<.*?>')
+    def strip_tags(text):
+        return strip_tags_re.sub('', text)
+
+    whitespace_re = re.compile('\s+')
+    whitespace_re2 = re.compile('\s+\n')
+    def extract_text(text):
+        # remove duplicated spacing
+        description = whitespace_re.sub(' ', text)
+        # replace paragraphs by newlines
+        description = description.replace('</p>', '\n').replace('<p>', '\n')
+        # remove duplicate newlines, and spaces at the end of lines
+        description = whitespace_re2.sub('\n', description).strip()
+        # remove HTML tags
+        return strip_tags(description)
+
+    for result in state.search:
+        # Decide on prefix joiner. Defines are among the :: ones as well,
+        # because we need to add the function macros twice -- but they have no
+        # prefix, so it's okay.
+        if EntryType(result.flags.type) in [EntryType.NAMESPACE, EntryType.CLASS, EntryType.STRUCT, EntryType.UNION, EntryType.TYPEDEF, EntryType.FUNC, EntryType.VAR, EntryType.ENUM, EntryType.ENUM_VALUE, EntryType.DEFINE]:
+            joiner = '::'
+        elif EntryType(result.flags.type) in [EntryType.DIR, EntryType.FILE]:
+            joiner = '/'
+        elif EntryType(result.flags.type) in [EntryType.PAGE, EntryType.GROUP]:
+            joiner = ' » '
+            
+        else:
+            assert False # pragma: no cover
+
+        # Handle function arguments
+        name_with_args = result.name
+        suffix_length = 0
+        if hasattr(result, 'params') and result.params is not None:
+            # Some very heavily templated function parameters might cause the
+            # suffix_length to exceed 256, which won't fit into the serialized
+            # search data. However that *also* won't fit in the search result
+            # list so there's no point in storing so much. Truncate it to 48
+            # chars which should fit the full function name in the list in most
+            # cases, yet be still long enough to be able to distinguish
+            # particular overloads.
+            # TODO: the suffix_length has to be calculated on UTF-8 and I
+            # am (un)escaping a lot back and forth here -- needs to be
+            # cleaned up
+            params = html.unescape(strip_tags(', '.join(result.params)))
+            if len(params) > 49:
+                params = params[:48] + '…'
+            name_with_args += '(' + html.escape(params) + ')'
+            suffix_length += len(params.encode('utf-8')) + 2
+        if hasattr(result, 'suffix') and result.suffix:
+            name_with_args += result.suffix
+            # TODO: escape elsewhere so i don't have to unescape here
+            suffix_length += len(html.unescape(result.suffix))
+
+        # TODO: escape elsewhere so i don't have to unescape here
+        symbol = html.unescape(joiner.join(result.prefix + [name_with_args]))
+        description = (html.unescape(extract_text(result.brief) + ' ' + extract_text(result.description))).strip()
+        #if description:
+        weight = 0
+        if result.kind == 'class' or result.kind == 'struct':
+            weight = 10
+        elif result.kind == 'func':
+            weight = 9
+        data.append([symbol, description, result.url, weight])
+
+    return data
 
 def parse_xml(state: State, xml: str):
     # Reset counter for unique math formulas
@@ -3177,6 +3265,9 @@ def parse_xml(state: State, xml: str):
         result.prefix = state.current_prefix[:-1]
         result.name = state.current_prefix[-1]
         result.keywords = search_keywords
+        result.brief = compound.brief
+        result.description = compound.description
+        result.kind = compound.kind
         state.search += [result]
 
     parsed = Empty()
@@ -3337,6 +3428,7 @@ def parse_doxyfile(state: State, doxyfile, config = None):
         'M_MATH_CACHE_FILE': ['m.math.cache'],
         'M_PAGE_FINE_PRINT': ['[default]'],
         'M_SEARCH_DISABLED': ['NO'],
+        'M_FULLTEXT_SEARCH_DISABLED': ['NO'],
         'M_SEARCH_DOWNLOAD_BINARY': ['NO'],
         'M_SEARCH_HELP': [
 """<p class="m-noindent">Search for symbols, directories, files, pages or
@@ -3473,6 +3565,7 @@ copy a link to the result using <span class="m-label m-dim">⌘</span>
               'SHOW_INCLUDE_FILES',
               'M_EXPAND_INNER_TYPES',
               'M_SEARCH_DISABLED',
+              'M_FULLTEXT_SEARCH_DISABLED',
               'M_SEARCH_DOWNLOAD_BINARY',
               'M_SHOW_UNDOCUMENTED',
               'M_VERSION_LABELS']:
@@ -3644,8 +3737,25 @@ def run(state: State, *, templates=default_templates, wildcard=default_wildcard,
                 # also for nested templates :(
                 f.write(b'\n')
 
+        if not state.doxyfile['M_FULLTEXT_SEARCH_DISABLED']:
+            data = build_fulltext_search_data(state)
+            #import json
+            #data = json.dumps(data).replace("'", "\\'")
+            
+            fullsearchdata_filename = f'fullsearchdata-v0.bin'
+            fullsearchdata_filename_b85 = f'fullsearchdata-v0.js'
+            if state.doxyfile['M_SEARCH_DOWNLOAD_BINARY']:
+                raise "TODO"
+                with open(os.path.join(html_output, fullsearchdata_filename), 'wb') as f:
+                    f.write(data)
+            else:
+                data = "let fullsearchdata = {};".format(data)
+                with open(os.path.join(html_output, fullsearchdata_filename_b85), 'wb') as f:
+                    f.write(data.encode('utf-8'))
+            
+
     # Copy all referenced files
-    for i in state.images + state.doxyfile['HTML_EXTRA_STYLESHEET'] + state.doxyfile['HTML_EXTRA_FILES'] + ([state.doxyfile['PROJECT_LOGO']] if state.doxyfile['PROJECT_LOGO'] else []) + ([state.doxyfile['M_FAVICON'][0]] if state.doxyfile['M_FAVICON'] else []) + ([] if state.doxyfile['M_SEARCH_DISABLED'] else ['search.js']):
+    for i in state.images + state.doxyfile['HTML_EXTRA_STYLESHEET'] + state.doxyfile['HTML_EXTRA_FILES'] + ([state.doxyfile['PROJECT_LOGO']] if state.doxyfile['PROJECT_LOGO'] else []) + ([state.doxyfile['M_FAVICON'][0]] if state.doxyfile['M_FAVICON'] else []) + ([] if state.doxyfile['M_SEARCH_DISABLED'] else ['search.js', 'fullsearch.min.js']):
         # Skip absolute URLs
         if urllib.parse.urlparse(i).netloc: continue
 
